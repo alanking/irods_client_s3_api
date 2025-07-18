@@ -208,7 +208,12 @@ namespace irods::http
 							boost::urls::url url;
 							get_url_from_parser(*parser, url);
 							boost::urls::url_view url_view = url;
-							irods::s3::actions::handle_getobject(shared_this, *parser, url_view);
+							try {
+								irods::s3::actions::handle_getobject(shared_this, *parser, url_view);
+							}
+							catch (const std::exception& e) {
+								logging::debug("Exception caught in handle_getobject: {}", e.what());
+							}
 						});
 					}
 				}
