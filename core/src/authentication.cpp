@@ -4,8 +4,9 @@
 #include "irods/private/s3_api/log.hpp"
 
 #include <algorithm>
-#include <iostream>
+#include <ctime>
 #include <iomanip>
+#include <iostream>
 #include <sstream>
 
 #include <boost/algorithm/string.hpp>
@@ -190,6 +191,35 @@ namespace
 
 		return result.str();
 	}
+
+	auto request_is_expired(const std::string& signature_timestamp, const std::string& expiration_time) -> bool
+	{
+		namespace logging = irods::http::logging;
+		try {
+			std::tm t{};
+			std::istringstream ss{signature_timestamp};
+			// The signature timestamp found in the Date parameter is expected to conform to ISO 8601 in the form
+			// shown in the format string below.
+			ss >> std::get_time(&t, "%Y%m%dT%H%M%SZ");
+			if (!ss.fail()) {
+				// This is on a separate line to make the type conversions explicitly clear. The expiration time should
+				// be a string coming from a query parameter or some other part of a request. It should represent the
+				// number of seconds from the time that the request was signed that the signature is valid. The times
+				// used here are of type std::time_t, which, while unspecified, is typically a long or long long int.
+				const std::time_t expiration_in_seconds = static_cast<std::time_t>(std::stol(expiration_time));
+
+				// If the number of seconds between now and when the request was signed is greater than the number of
+				// seconds until the request is expired, that means the request is expired.
+				return time(nullptr) > std::mktime(&t) + expiration_in_seconds;
+			}
+		}
+		catch (const std::exception& e) {
+			// Failed to interpret expiration timestamp, so, consider it expired.
+			logging::debug("{}: Caught exception: {}", __func__, e.what());
+		}
+		// If we reach here, consider the request expired. Some sort of error has occurred.
+		return true;
+	} // request_is_expired
 } //namespace
 
 std::optional<std::string> irods::s3::authentication::authenticates(
@@ -224,6 +254,22 @@ std::optional<std::string> irods::s3::authentication::authenticates(
 			return std::nullopt;
 		}
 		signature_timestamp = (*date_iter).value;
+
+		// Need to make sure the credentials haven't expired yet.
+		const auto expiration_iter = params.find("X-Amz-Expires");
+		if (params.end() == expiration_iter) {
+			logging::debug("No X-Amz-Expires query parameter found.");
+			return std::nullopt;
+		}
+		const auto& expiration_time = (*expiration_iter).value;
+
+		// Make sure the request is not expired. Check the Date + Expire time against current server time. This can
+		// happen before or after the signature has been calculated because it will be incorrect if the client tampered
+		// with the Date or Expire times.
+		if (request_is_expired(signature_timestamp, expiration_time)) {
+			logging::debug("Authenticating request failed: Request expired.");
+			return std::nullopt;
+		}
 
 		// Get the SignedHeaders from the query parameters. This must include at least "host".
 		const auto signed_headers_iter = params.find("X-Amz-SignedHeaders");
