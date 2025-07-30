@@ -4,12 +4,14 @@
 #include "irods/private/s3_api/log.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <ctime>
 #include <iomanip>
 #include <iostream>
 #include <sstream>
 
 #include <boost/algorithm/string.hpp>
+#include <boost/date_time/posix_time/posix_time.hpp>
 
 #include <irods/rcMisc.h>
 #include <irods/rodsKeyWdDef.h>
@@ -192,30 +194,39 @@ namespace
 		return result.str();
 	}
 
-	auto request_is_expired(const std::string& signature_timestamp, const std::string& expiration_time) -> bool
+	auto request_is_expired(const std::string& signature_timestamp_str, const std::string& expiration_time_str) -> bool
 	{
 		namespace logging = irods::http::logging;
+		// Maximum time request can be valid is 7 days, and here it is being represented in seconds.
+		constexpr long long maximum_time_request_can_be_valid_in_seconds = 7 * 24 * 60 * 60;
 		try {
-			std::tm t{};
-			std::istringstream ss{signature_timestamp};
-			// The signature timestamp found in the Date parameter is expected to conform to ISO 8601 in the form
-			// shown in the format string below.
-			ss >> std::get_time(&t, "%Y%m%dT%H%M%SZ");
-			if (!ss.fail()) {
-				// This is on a separate line to make the type conversions explicitly clear. The expiration time should
-				// be a string coming from a query parameter or some other part of a request. It should represent the
-				// number of seconds from the time that the request was signed that the signature is valid. The times
-				// used here are of type std::time_t, which, while unspecified, is typically a long or long long int.
-				const std::time_t expiration_in_seconds = static_cast<std::time_t>(std::stol(expiration_time));
-
-				// If the number of seconds between now and when the request was signed is greater than the number of
-				// seconds until the request is expired, that means the request is expired.
-				return time(nullptr) > std::mktime(&t) + expiration_in_seconds;
+			const auto signature_timestamp = boost::posix_time::from_iso_string(signature_timestamp_str);
+			if (signature_timestamp > boost::posix_time::from_time_t(std::time(nullptr))) {
+				// If the request is from the future, reject it. It's not "expired", but it should not be processed.
+				return true;
 			}
+
+			// The expiration time should be a string coming from a query parameter or some other part of a request.
+			// It should represent the number of seconds from the time that the request was signed that the
+			// signature is valid.
+			const auto expiration_in_seconds = std::stoll(expiration_time_str);
+			if (expiration_in_seconds < 0 || expiration_in_seconds > maximum_time_request_can_be_valid_in_seconds) {
+				// The expiration time must be a positive integer in the range [0, 604800]. Otherwise, consider the
+				// request expired.
+				// TODO(#151): Should we actually return an error in this case?
+				return true;
+			}
+
+			const auto time_of_expiration = signature_timestamp + boost::posix_time::seconds{expiration_in_seconds};
+			return boost::posix_time::from_time_t(std::time(nullptr)) > time_of_expiration;
 		}
 		catch (const std::exception& e) {
 			// Failed to interpret expiration timestamp, so, consider it expired.
 			logging::debug("{}: Caught exception: {}", __func__, e.what());
+		}
+		catch (const boost::exception&) {
+			// TODO(#???): Unclear how to handle these things.
+			logging::debug("{}: Caught Boost exception", __func__);
 		}
 		// If we reach here, consider the request expired. Some sort of error has occurred.
 		return true;
