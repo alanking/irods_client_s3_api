@@ -8,13 +8,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ 'ubuntu:22.04', 'ubuntu:24.04' ]
+        os: [ 'ubuntu:22.04' ]
         irods-version: [ 4.3.1, 4.3.2, 4.3.3, 4.3.4, 5.0.0, 5.0.1 ]
-        exclude:
-          - os: 'ubuntu:24.04'
-            irods-version: 4.3.1
-          - os: 'ubuntu:24.04'
-            irods-version: 4.3.2
     runs-on: ubuntu-latest
     container: ${{ matrix.os }}
     steps:
@@ -64,6 +59,7 @@ jobs:
               apt-get update -qq
               apt-get install -qq \
                 irods-externals-clang13.0.0-0 \
+                irods-externals-clang13.0.1-0 \
                 irods-externals-fmt-libcxx8.1.1-1 \
                 irods-externals-json3.10.4-0 \
                 irods-externals-jsoncons0.178.0-0 \
