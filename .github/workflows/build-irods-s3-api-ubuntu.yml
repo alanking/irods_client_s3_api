@@ -63,6 +63,7 @@ jobs:
               echo "deb [arch=amd64] https://unstable.irods.org/apt/ $(lsb_release -sc) main" | tee /etc/apt/sources.list.d/renci-irods-unstable.list
               apt-get update -qq
               apt-get install -qq \
+                irods-externals-clang13.0.1-0 \
                 irods-externals-fmt-libcxx8.1.1-1 \
                 irods-externals-json3.10.4-0 \
                 irods-externals-jsoncons0.178.0-0 \
