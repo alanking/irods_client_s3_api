@@ -194,6 +194,14 @@ namespace irods::http
 						response.result(boost::beast::http::status::ok);
 						send(std::move(response));
 					}
+					else if (params.find("versioning") != params.end()) {
+						logging::debug("{}: GetBucketVersioning detected", __func__);
+						boost::beast::http::response<boost::beast::http::string_body> response;
+						response.body() = "<?xml version='1.0' encoding='utf-8'?>"
+										  "<VersioningConfiguration/>";
+						response.result(boost::beast::http::status::ok);
+						send(std::move(response));
+					}
 					else {
 						logging::debug("{}: GetObject detected", __func__);
 						auto shared_this = shared_from_this();
