@@ -211,6 +211,11 @@ void irods::s3::actions::handle_listobjects_v2(
 			full_path.parent_path().c_str());
 		logging::debug("{}: query={}", __func__, query);
 		for (auto&& row : irods::query<RcComm>(rcComm_t_ptr, query)) {
+			// Skip over the bucket base collection.
+			if (row[0] == bucket_base.c_str()) {
+				logging::debug("{}: skipping bucket base coll", __func__);
+				continue;
+			}
 			std::string key = (row[0].size() > base_length ? row[0].substr(base_length) : "");
 			if (key.starts_with("/")) {
 				key = key.substr(1);
