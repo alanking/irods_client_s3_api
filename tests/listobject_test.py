@@ -3,6 +3,7 @@ import botocore
 import botocore.session
 import inspect
 import os
+import time
 import unittest
 
 from host_port import s3_api_host_port
@@ -314,3 +315,92 @@ class ListObject_Test(unittest.TestCase):
                     if os.path.exists(put_filename):
                         os.remove(put_filename)
                     command.assert_command(['irm', '-f', logical_path])
+
+    def test_list_object_with_multiple_replicas_only_shows_one_s3_object_per_irods_object__issue_223(self):
+        test_resc = "newResc"
+        collection_name = 'issue_223_coll'
+        put_filename = 'issue_223.data'
+        collection_path = f'{self.bucket_irods_path}/{collection_name}'
+        logical_path = f'{collection_path}/{put_filename}'
+        sleep_time_in_seconds = 2
+        original_size_in_bytes = 100
+        updated_size_in_bytes = 101
+
+        try:
+            # Create a test collection.
+            command.assert_command(['imkdir', collection_path])
+
+            # Create a test data object.
+            utility.make_arbitrary_file(put_filename, original_size_in_bytes)
+            command.assert_command(['iput', put_filename, logical_path])
+
+            # Replicate to the test resource so that there are multiple replicas.
+            command.assert_command(['irepl', '-R', test_resc, logical_path])
+
+            # Sleep for some time, then touch one of the replicas so we have a stale replica with a different mtime.
+            time.sleep(sleep_time_in_seconds)
+            utility.make_arbitrary_file(put_filename, updated_size_in_bytes)
+            command.assert_command(['iput', '-R', test_resc, '-f', put_filename, logical_path])
+
+            # Get mtime and status for each replica.
+            query = "select DATA_MODIFY_TIME, DATA_REPL_STATUS where COLL_NAME = '{}' and DATA_NAME = '{}' and DATA_REPL_NUM = '{}'"
+            replica_0_mtime, replica_0_status = command.assert_command(
+                ['iquest', '%s\n%s', query.format( os.path.dirname(logical_path), os.path.basename(logical_path), str(0))],
+                'STDOUT'
+            )[1].strip().split('\n')
+            replica_1_mtime, replica_1_status = command.assert_command(
+                ['iquest', '%s\n%s', query.format( os.path.dirname(logical_path), os.path.basename(logical_path), str(1))],
+                'STDOUT'
+            )[1].strip().split('\n')
+
+            # Ensure that the system metadata is in the expected state.
+            self.assertEqual(str(0), replica_0_status)
+            self.assertEqual(str(1), replica_1_status)
+            self.assertGreater(int(replica_1_mtime), int(replica_0_mtime))
+
+            # Confirm that the object is only listed once and uses info from the most-recently-updated replica.
+
+            mc_targets = [
+                f's3-api-alice/{self.bucket_name}/{collection_name}/{put_filename}',
+                f's3-api-alice/{self.bucket_name}/{collection_name}/'
+            ]
+            for target in mc_targets:
+                with self.subTest(f'mc ls {target}'):
+                    _, out, _ = command.assert_command(['mc', 'ls', target], 'STDOUT', put_filename)
+                    self.assertIn(f'{updated_size_in_bytes}B STANDARD', out)
+                    self.assertNotIn(f'{original_size_in_bytes}B STANDARD', out)
+
+            aws_targets = [
+                f's3://{self.bucket_name}/{collection_name}/{put_filename}',
+                f's3://{self.bucket_name}/{collection_name}/'
+            ]
+            for target in aws_targets:
+                with self.subTest(f'aws s3 ls {target}'):
+                    # List the data object...
+                    _, out, _ = command.assert_command(
+                        [
+                            'aws',
+                            '--profile',
+                            's3_api_alice',
+                            '--endpoint-url',
+                            self.s3_api_url,
+                            's3',
+                            'ls',
+                            target
+                        ],
+                        'STDOUT',
+                        put_filename)
+                    self.assertIn(f'{updated_size_in_bytes} {put_filename}', out)
+                    self.assertNotIn(f'{original_size_in_bytes} {put_filename}', out)
+
+            target = f'{collection_name}/{put_filename}'
+            with self.subTest(f'botocore list_objects_v2 prefix={target}'):
+                listobjects_result = self.client.list_objects_v2(Bucket=self.bucket_name, Prefix=target)
+                print(listobjects_result)
+                self.assertEqual(len(listobjects_result['Contents']), 1)
+                self.assert_key_in_contents_list(listobjects_result, target, size=updated_size_in_bytes)
+
+        finally:
+            command.assert_command(['ils', '-Lr'], 'STDOUT') # debugging
+            command.assert_command(['rm', '-f', put_filename])
+            command.assert_command(['irm', '-rf', collection_path])
