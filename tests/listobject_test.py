@@ -4,6 +4,7 @@ import botocore.session
 import inspect
 import itertools
 import os
+import socket
 import unittest
 
 from host_port import s3_api_host_port
@@ -11,11 +12,11 @@ from libs import command, utility
 
 
 def switch_client_user(username, password):
-    client_environment_file = "~/.irods/irods_environment.json"
-    new_client_environment_file = f"~/.irods/irods_environment.json.{username}"
+    client_environment_file = "/root/.irods/irods_environment.json"
+    new_client_environment_file = f"/root/.irods/irods_environment.json.{username}"
     command.assert_command(['iexit'])
     command.assert_command(['cp', new_client_environment_file, client_environment_file])
-    command.assert_command(['iinit'], input=password)
+    command.assert_command(['iinit'], 'STDOUT', f"Connecting as {username}", input=password)
 
 
 class ListObject_Test(unittest.TestCase):
@@ -80,7 +81,7 @@ class ListObject_Test(unittest.TestCase):
                 matching_size = entry['Size']
                 matching_lastmodified = entry['LastModified']
                 break
-    
+
         self.assertIsNotNone(matching_key, f'Key not found [{key}]')
         self.assertIsNotNone(matching_size, f'Size not found for key [{key}]')
         self.assertIsNotNone(matching_lastmodified, f'LastModified is not found for key {key}')
@@ -336,61 +337,63 @@ class ListObject_with_Multiple_Replicas_Test(unittest.TestCase):
     test_resources = [f's3_ufs{n}' for n in range(1, 3)]
     collection_name = 'issue_223_coll'
     put_filename = 'issue_223.data'
-    collection_path = f'{self.bucket_irods_path}/{collection_name}'
+    collection_path = f'{bucket_irods_path}/{collection_name}'
     logical_path = f'{collection_path}/{put_filename}'
     repl0_size = 100
     repl1_size = 101
     repl2_size = 102
 
+    @staticmethod
     def switch_to_rodsuser():
         switch_client_user("alice", "apass")
-    
+
+    @staticmethod
     def switch_to_rodsadmin():
         switch_client_user("rods", "rods")
 
     def __init__(self, *args, **kwargs):
         super(ListObject_with_Multiple_Replicas_Test, self).__init__(*args, **kwargs)
 
-    @classmethod 
+    @classmethod
     def setUpClass(self):
-        switch_to_rodsadmin()
-        for resc in test_resources:
-            command.assert_command(
-                ['iadmin', 'mkresc', resc, 'unixfilesystem', f'{socket.gethostname()}:/tmp/{resc}_vault'])
-
-        switch_to_rodsuser()
+        self.switch_to_rodsuser()
 
         # Create a test collection.
-        command.assert_command(['imkdir', collection_path])
+        command.assert_command(['imkdir', self.collection_path])
 
         # Create a test data object.
         utility.make_arbitrary_file(self.put_filename, self.repl0_size)
         command.assert_command(['iput', self.put_filename, self.logical_path])
 
+        self.switch_to_rodsadmin()
+        for resc in self.test_resources:
+            command.assert_command(
+                ['iadmin', 'mkresc', resc, 'unixfilesystem', f'irods-catalog-provider:/tmp/{resc}_vault'],
+                "STDOUT", resc)
+
         # Replicate to the test resource so that there are multiple replicas.
-        for resc in test_resources:
-            command.assert_command(['irepl', '-R', resc, self.logical_path])
+        for resc in self.test_resources:
+            command.assert_command(['irepl', '-M', '-R', resc, self.logical_path])
 
         # Change the replica sizes so that they are all unique.
-        self.assertNotEqual(repl0_size, repl1_size)
-        self.assertNotEqual(repl0_size, repl2_size)
-        self.assertNotEqual(repl1_size, repl2_size)
         command.assert_command(
-            ["iadmin", "modrepl", "logical_path", logical_path, "replica_number", str(1), "DATA_SIZE", str(repl1_size))
+            ["iadmin", "modrepl", "logical_path", self.logical_path, "replica_number", str(1), "DATA_SIZE", str(self.repl1_size)])
         command.assert_command(
-            ["iadmin", "modrepl", "logical_path", logical_path, "replica_number", str(2), "DATA_SIZE", str(repl2_size))
+            ["iadmin", "modrepl", "logical_path", self.logical_path, "replica_number", str(2), "DATA_SIZE", str(self.repl2_size)])
 
-    @classmethod 
+        self.switch_to_rodsuser()
+
+    @classmethod
     def tearDownClass(self):
-        switch_to_rodsuser()
+        self.switch_to_rodsuser()
         command.assert_command(['rm', '-f', self.put_filename])
         command.assert_command(['irm', '-rf', self.collection_path])
 
-        switch_to_rodsadmin()
-        for resc in test_resources:
+        self.switch_to_rodsadmin()
+        for resc in self.test_resources:
             command.assert_command(['iadmin', 'rmresc', resc])
 
-        switch_to_rodsuser()
+        self.switch_to_rodsuser()
 
     def setUp(self):
         session = botocore.session.get_session()
@@ -399,36 +402,65 @@ class ListObject_with_Multiple_Replicas_Test(unittest.TestCase):
                                             endpoint_url=self.s3_api_url,
                                             aws_access_key_id=self.key,
                                             aws_secret_access_key=self.secret_key)
+
     def tearDown(self):
         pass
+
+    def assert_key_in_contents_list(self, list_objects_result, key, size=None, lastmodified=None):
+        contents_list = list_objects_result['Contents']
+        matching_key = None
+        matching_size = None
+        matching_lastmodified = None
+        for entry in contents_list:
+            if entry['Key'] == key:
+                matching_key = entry['Key']
+                matching_size = entry['Size']
+                matching_lastmodified = entry['LastModified']
+                break
+
+        self.assertIsNotNone(matching_key, f'Key not found [{key}]')
+        self.assertIsNotNone(matching_size, f'Size not found for key [{key}]')
+        self.assertIsNotNone(matching_lastmodified, f'LastModified is not found for key {key}')
+        if size != None:
+            self.assertEqual(matching_size, size, f'Size does not match for key {key}')
+        if lastmodified != None:
+            # Only checking year/month/day.  This could fail if the time between
+            # writing the file to iRODS and  getting the current datetime object
+            # rolled over to a new day.
+            self.assertEqual(matching_lastmodified.year, lastmodified.year, f'Year does not match for key {key}')
+            self.assertEqual(matching_lastmodified.month, lastmodified.month, f'Month does not match for key {key}')
+            self.assertEqual(matching_lastmodified.day,  lastmodified.day, f'Day does not match for key {key}')
 
     def do_test(self, replica_info, index_of_selected_replica):
         try:
             # Change the statuses of the replicas to the desired states.
-            switch_to_rodsadmin()
+            self.switch_to_rodsadmin()
 
-            # Make all the replicas stale.
+            # Set all the replica statuses and sizes as specified in the dict.
             for repl in replica_info:
-                command.assert_command(["iadmin", "modrepl", "logical_path", self.logical_path, "replica_number", repl["number"], "DATA_REPL_STATUS", repl["status"])
-                command.assert_command(["iadmin", "modrepl", "logical_path", self.logical_path, "replica_number", repl["number"], "DATA_MODIFY_TIME", repl["mtime"])
+                repl_num = str(repl["number"])
+                status = repl["status"]
+                mtime = repl["mtime"]
+                command.assert_command(
+                    ["iadmin", "modrepl", "logical_path", self.logical_path, "replica_number", repl_num, "DATA_REPL_STATUS", status])
+                command.assert_command(
+                    ["iadmin", "modrepl", "logical_path", self.logical_path, "replica_number", repl_num, "DATA_MODIFY_TIME", mtime])
 
             # Change the statuses of the replicas to the desired states.
-            switch_to_rodsuser()
+            self.switch_to_rodsuser()
 
             expected_repl = replica_info[index_of_selected_replica]
 
             # Confirm that the object is only listed once and uses info from the most-recently-updated replica.
 
             mc_targets = [
-                f's3-api-alice/{self.bucket_name}/{collection_name}/{put_filename}',
-                f's3-api-alice/{self.bucket_name}/{collection_name}/'
+                f's3-api-alice/{self.bucket_name}/{self.collection_name}/{self.put_filename}',
+                f's3-api-alice/{self.bucket_name}/{self.collection_name}/'
             ]
             for target in mc_targets:
                 with self.subTest(f'mc ls {target}'):
-                    _, out, _ = command.assert_command(['mc', 'ls', target], 'STDOUT', put_filename)
-                    self.assertIn(f'{repl["size"]}B STANDARD', out)
-                    self.assertNotIn(f'{original_size_in_bytes}B STANDARD', out)
-                    for repl, i in enumerate(replica_info):
+                    _, out, _ = command.assert_command(['mc', 'ls', target], 'STDOUT', self.put_filename)
+                    for i, repl in enumerate(replica_info):
                         repl = replica_info[i]
                         if index_of_selected_replica == i:
                             self.assertIn(f'{repl["size"]}B STANDARD', out)
@@ -436,8 +468,8 @@ class ListObject_with_Multiple_Replicas_Test(unittest.TestCase):
                             self.assertNotIn(f'{repl["size"]}B STANDARD', out)
 
             aws_targets = [
-                f's3://{self.bucket_name}/{collection_name}/{put_filename}',
-                f's3://{self.bucket_name}/{collection_name}/'
+                f's3://{self.bucket_name}/{self.collection_name}/{self.put_filename}',
+                f's3://{self.bucket_name}/{self.collection_name}/'
             ]
             for target in aws_targets:
                 with self.subTest(f'aws s3 ls {target}'):
@@ -454,16 +486,14 @@ class ListObject_with_Multiple_Replicas_Test(unittest.TestCase):
                             target
                         ],
                         'STDOUT',
-                        put_filename)
-                    self.assertIn(f'{updated_size_in_bytes} {put_filename}', out)
-                    self.assertNotIn(f'{original_size_in_bytes} {put_filename}', out)
-                    for repl, i in enumerate(replica_info):
+                        self.put_filename)
+                    for i, repl in enumerate(replica_info):
                         if index_of_selected_replica == i:
                             self.assertIn(f'{repl["size"]} {self.put_filename}', out)
                         else:
                             self.assertNotIn(f'{repl["size"]} {self.put_filename}', out)
 
-            target = f'{collection_name}/{put_filename}'
+            target = f'{self.collection_name}/{self.put_filename}'
             with self.subTest(f'botocore list_objects_v2 prefix={target}'):
                 listobjects_result = self.client.list_objects_v2(Bucket=self.bucket_name, Prefix=target)
                 print(listobjects_result)
@@ -472,23 +502,24 @@ class ListObject_with_Multiple_Replicas_Test(unittest.TestCase):
                     listobjects_result, target, size=replica_info[index_of_selected_replica]["size"])
 
         finally:
-            switch_to_rodsuser()
+            self.switch_to_rodsuser()
             command.assert_command(['ils', '-Lr'], 'STDOUT') # debugging
 
     def do_list_object_with_multiple_replicas_only_shows_one_s3_object_per_irods_object_test(
         self, status_tuple, expected_selected_replica_indexes
     ):
-        self.assertEqual(27, expected_selected_replica_indexes)
+        self.assertEqual(27, len(expected_selected_replica_indexes))
         repl0_status, repl1_status, repl2_status = status_tuple
         replica_info = [
-            {"number": 0, "status": repl0_status, "mtime": str(1000), "size": repl0_size}},
-            {"number": 1, "status": repl1_status, "mtime": str(1000), "size": repl1_size}},
-            {"number": 2, "status": repl2_status, "mtime": str(1000), "size": repl2_size}},
+            {"number": 0, "status": repl0_status, "mtime": str(1000), "size": self.repl0_size},
+            {"number": 1, "status": repl1_status, "mtime": str(1000), "size": self.repl1_size},
+            {"number": 2, "status": repl2_status, "mtime": str(1000), "size": self.repl2_size},
         ]
 
         expected_index = itertools.count()
 
-        # case 1-9
+        ###
+
         replica_info[0]["mtime"] = str(1000)
 
         replica_info[1]["mtime"] = str(1000)
@@ -515,7 +546,8 @@ class ListObject_with_Multiple_Replicas_Test(unittest.TestCase):
         replica_info[2]["mtime"] = str(1002)
         self.do_test(replica_info, expected_selected_replica_indexes[next(expected_index)])
 
-        # case 10-18
+        ###
+
         replica_info[1]["mtime"] = str(1001)
 
         replica_info[1]["mtime"] = str(1000)
@@ -542,7 +574,8 @@ class ListObject_with_Multiple_Replicas_Test(unittest.TestCase):
         replica_info[2]["mtime"] = str(1002)
         self.do_test(replica_info, expected_selected_replica_indexes[next(expected_index)])
 
-        # case 19-27
+        ###
+
         replica_info[1]["mtime"] = str(1002)
 
         replica_info[1]["mtime"] = str(1000)
@@ -569,56 +602,56 @@ class ListObject_with_Multiple_Replicas_Test(unittest.TestCase):
         replica_info[2]["mtime"] = str(1002)
         self.do_test(replica_info, expected_selected_replica_indexes[next(expected_index)])
 
-    def test_repl0_good_repl1_good_repl2_good(self, status_tuple):
+    def test_repl0_good_repl1_good_repl2_good(self):
         # cases 1-27
         self.do_list_object_with_multiple_replicas_only_shows_one_s3_object_per_irods_object_test(
             (str(1), str(1), str(1)),
             [0, 2, 2, 1, 1, 2, 1, 1, 1, 0, 0, 2, 0, 0, 2, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0]
         )
 
-    def test_repl0_good_repl1_good_repl2_stale(self, status_tuple):
+    def test_repl0_good_repl1_good_repl2_stale(self):
         # cases 28-54
         self.do_list_object_with_multiple_replicas_only_shows_one_s3_object_per_irods_object_test(
             (str(1), str(1), str(0)),
             [0, 0, 0, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0]
         )
 
-    def test_repl0_good_repl1_stale_repl2_good(self, status_tuple):
+    def test_repl0_good_repl1_stale_repl2_good(self):
         # cases 55-81
         self.do_list_object_with_multiple_replicas_only_shows_one_s3_object_per_irods_object_test(
             (str(1), str(0), str(1)),
             [0, 2, 2, 0, 2, 2, 0, 2, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0]
         )
 
-    def test_repl0_good_repl1_stale_repl2_stale(self, status_tuple):
+    def test_repl0_good_repl1_stale_repl2_stale(self):
         # cases 82-108
         self.do_list_object_with_multiple_replicas_only_shows_one_s3_object_per_irods_object_test(
             (str(1), str(0), str(0)),
             [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
         )
 
-    def test_repl0_stale_repl1_good_repl2_good(self, status_tuple):
+    def test_repl0_stale_repl1_good_repl2_good(self):
         # cases 109-135
         self.do_list_object_with_multiple_replicas_only_shows_one_s3_object_per_irods_object_test(
             (str(0), str(1), str(1)),
             [1, 2, 2, 1, 1, 2, 1, 1, 1, 1, 2, 2, 1, 1, 2, 1, 1, 1, 1, 2, 2, 1, 1, 2, 1, 1, 1]
         )
 
-    def test_repl0_stale_repl1_good_repl2_stale(self, status_tuple):
+    def test_repl0_stale_repl1_good_repl2_stale(self):
         # cases 136-162
         self.do_list_object_with_multiple_replicas_only_shows_one_s3_object_per_irods_object_test(
             (str(0), str(1), str(0)),
             [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
         )
 
-    def test_repl0_stale_repl1_stale_repl2_good(self, status_tuple):
+    def test_repl0_stale_repl1_stale_repl2_good(self):
         # cases 163-189
         self.do_list_object_with_multiple_replicas_only_shows_one_s3_object_per_irods_object_test(
             (str(0), str(0), str(0)),
             [2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2]
         )
 
-    def test_repl0_stale_repl1_stale_repl2_stale(self, status_tuple):
+    def test_repl0_stale_repl1_stale_repl2_stale(self):
         # cases 190-216
         self.do_list_object_with_multiple_replicas_only_shows_one_s3_object_per_irods_object_test(
             (str(0), str(0), str(0)),
