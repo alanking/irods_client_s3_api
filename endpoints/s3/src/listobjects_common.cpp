@@ -88,7 +88,7 @@ namespace irods::s3::detail
 			const auto& replica_status_in_map = entry[6];
 			if (this_replica_status == replica_status_in_map) {
 				// Same status, less recently modified. Do not update it.
-				if (std::stoull(row[5]) < std::stoull(entry[5])) {
+				if (std::stoull(row[5]) <= std::stoull(entry[5])) {
 					continue;
 				}
 			}
