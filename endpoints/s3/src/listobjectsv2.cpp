@@ -116,7 +116,7 @@ void irods::s3::actions::handle_listobjects_v2(
 			}
 
 			query = fmt::format(
-				"select DATA_ID, COLL_NAME, DATA_NAME, DATA_OWNER_NAME, DATA_SIZE, DATA_MODIFY_TIME, DATA_REPL_STATUS "
+				"select DATA_ID, COLL_NAME, DATA_NAME, DATA_OWNER_NAME, DATA_SIZE, DATA_MODIFY_TIME, DATA_REPL_STATUS, order(DATA_REPL_NUM) "
 			    "where COLL_NAME = '{}'",
 				full_path.parent_path().c_str());
 			detail::get_data_object_info_with_query(rcComm_t_ptr, query, id_to_info);
@@ -147,7 +147,7 @@ void irods::s3::actions::handle_listobjects_v2(
 			}
 
 			query = fmt::format(
-				"select DATA_ID, COLL_NAME, DATA_NAME, DATA_OWNER_NAME, DATA_SIZE, DATA_MODIFY_TIME, DATA_REPL_STATUS "
+				"select DATA_ID, COLL_NAME, DATA_NAME, DATA_OWNER_NAME, DATA_SIZE, DATA_MODIFY_TIME, DATA_REPL_STATUS, order(DATA_REPL_NUM) "
 			    "where COLL_NAME = '{}' and DATA_NAME like '{}%'",
 				full_path.parent_path().c_str(),
 				full_path.object_name().c_str());
@@ -167,14 +167,14 @@ void irods::s3::actions::handle_listobjects_v2(
 
 		// look for objects with COLL_NAME like <prefix>%
 		query = fmt::format(
-			"select DATA_ID, COLL_NAME, DATA_NAME, DATA_OWNER_NAME, DATA_SIZE, DATA_MODIFY_TIME, DATA_REPL_STATUS "
+			"select DATA_ID, COLL_NAME, DATA_NAME, DATA_OWNER_NAME, DATA_SIZE, DATA_MODIFY_TIME, DATA_REPL_STATUS, order(DATA_REPL_NUM) "
 		    "where COLL_NAME like '{}%'",
 			full_path.c_str());
 		detail::get_data_object_info_with_query(rcComm_t_ptr, query, id_to_info);
 
 		// look for objects with COLL_NAME = <parent> and DATA_NAME like <object>%
 		query = fmt::format(
-			"select DATA_ID, COLL_NAME, DATA_NAME, DATA_OWNER_NAME, DATA_SIZE, DATA_MODIFY_TIME, DATA_REPL_STATUS "
+			"select DATA_ID, COLL_NAME, DATA_NAME, DATA_OWNER_NAME, DATA_SIZE, DATA_MODIFY_TIME, DATA_REPL_STATUS, order(DATA_REPL_NUM) "
 		    "where COLL_NAME = '{}' and DATA_NAME like '{}%'",
 			full_path.parent_path().c_str(),
 			full_path.object_name().c_str());
