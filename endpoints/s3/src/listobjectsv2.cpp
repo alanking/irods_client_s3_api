@@ -102,9 +102,7 @@ void irods::s3::actions::handle_listobjects_v2(
 		const auto& parent_path_str = full_path.parent_path().string();
 		if (full_path.object_name().empty()) {
 			// Get exact collections underneath this collection
-			query = fmt::format(
-				"select COLL_NAME where COLL_NAME like '{0}/%' and COLL_NAME not like '{0}/%/%'",
-				full_path.parent_path().c_str());
+			query = fmt::format("select COLL_NAME where COLL_PARENT_NAME = '{}'", full_path.parent_path().c_str());
 			logging::debug("{}: query=[{}]", __func__, query);
 			for (auto&& row : irods::query<RcComm>(rcComm_t_ptr, query)) {
 				ptree object;
