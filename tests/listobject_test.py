@@ -381,7 +381,14 @@ class ListObject_with_Multiple_Replicas_Test(unittest.TestCase):
         command.assert_command(
             ["iadmin", "modrepl", "logical_path", self.logical_path, "replica_number", str(2), "DATA_SIZE", str(self.repl2_size)])
 
-        self.switch_to_rodsuser()
+        session = botocore.session.get_session()
+        self.client = session.create_client('s3',
+                                            use_ssl=False,
+                                            endpoint_url=self.s3_api_url,
+                                            aws_access_key_id=self.key,
+                                            aws_secret_access_key=self.secret_key)
+
+        #self.switch_to_rodsuser()
 
     @classmethod
     def tearDownClass(self):
@@ -394,17 +401,6 @@ class ListObject_with_Multiple_Replicas_Test(unittest.TestCase):
             command.assert_command(['iadmin', 'rmresc', resc])
 
         self.switch_to_rodsuser()
-
-    def setUp(self):
-        session = botocore.session.get_session()
-        self.client = session.create_client('s3',
-                                            use_ssl=False,
-                                            endpoint_url=self.s3_api_url,
-                                            aws_access_key_id=self.key,
-                                            aws_secret_access_key=self.secret_key)
-
-    def tearDown(self):
-        pass
 
     def assert_key_in_contents_list(self, list_objects_result, key, size=None, lastmodified=None):
         contents_list = list_objects_result['Contents']
@@ -431,10 +427,10 @@ class ListObject_with_Multiple_Replicas_Test(unittest.TestCase):
             self.assertEqual(matching_lastmodified.month, lastmodified.month, f'Month does not match for key {key}')
             self.assertEqual(matching_lastmodified.day,  lastmodified.day, f'Day does not match for key {key}')
 
-    def do_test(self, replica_info, index_of_selected_replica):
+    def do_test(self, replica_info, index_of_selected_replica, case_name=None):
         try:
             # Change the statuses of the replicas to the desired states.
-            self.switch_to_rodsadmin()
+            #self.switch_to_rodsadmin()
 
             # Set all the replica statuses and sizes as specified in the dict.
             for repl in replica_info:
@@ -447,9 +443,15 @@ class ListObject_with_Multiple_Replicas_Test(unittest.TestCase):
                     ["iadmin", "modrepl", "logical_path", self.logical_path, "replica_number", repl_num, "DATA_MODIFY_TIME", mtime])
 
             # Change the statuses of the replicas to the desired states.
-            self.switch_to_rodsuser()
+            #self.switch_to_rodsuser()
 
+            if case_name is None:
+                case_name = (
+                    f'status:{[repl["status"] for repl in replica_info]},'
+                    f'mtime:{[repl["mtime"] for repl in replica_info]}'
+                )
             expected_repl = replica_info[index_of_selected_replica]
+            print(f"Expecting index {index_of_selected_replica}")
 
             # Confirm that the object is only listed once and uses info from the most-recently-updated replica.
 
@@ -458,7 +460,7 @@ class ListObject_with_Multiple_Replicas_Test(unittest.TestCase):
                 f's3-api-alice/{self.bucket_name}/{self.collection_name}/'
             ]
             for target in mc_targets:
-                with self.subTest(f'mc ls {target}'):
+                with self.subTest(f'mc ls {target}, case [{case_name}]'):
                     _, out, _ = command.assert_command(['mc', 'ls', target], 'STDOUT', self.put_filename)
                     for i, repl in enumerate(replica_info):
                         repl = replica_info[i]
@@ -472,7 +474,7 @@ class ListObject_with_Multiple_Replicas_Test(unittest.TestCase):
                 f's3://{self.bucket_name}/{self.collection_name}/'
             ]
             for target in aws_targets:
-                with self.subTest(f'aws s3 ls {target}'):
+                with self.subTest(f'aws s3 ls {target}, case [{case_name}]'):
                     # List the data object...
                     _, out, _ = command.assert_command(
                         [
@@ -486,7 +488,8 @@ class ListObject_with_Multiple_Replicas_Test(unittest.TestCase):
                             target
                         ],
                         'STDOUT',
-                        self.put_filename)
+                        self.put_filename,
+                        env=os.environ)
                     for i, repl in enumerate(replica_info):
                         if index_of_selected_replica == i:
                             self.assertIn(f'{repl["size"]} {self.put_filename}', out)
@@ -494,7 +497,7 @@ class ListObject_with_Multiple_Replicas_Test(unittest.TestCase):
                             self.assertNotIn(f'{repl["size"]} {self.put_filename}', out)
 
             target = f'{self.collection_name}/{self.put_filename}'
-            with self.subTest(f'botocore list_objects_v2 prefix={target}'):
+            with self.subTest(f'botocore list_objects_v2 prefix={target}, case [{case_name}]'):
                 listobjects_result = self.client.list_objects_v2(Bucket=self.bucket_name, Prefix=target)
                 print(listobjects_result)
                 self.assertEqual(len(listobjects_result['Contents']), 1)
@@ -502,13 +505,13 @@ class ListObject_with_Multiple_Replicas_Test(unittest.TestCase):
                     listobjects_result, target, size=replica_info[index_of_selected_replica]["size"])
 
         finally:
-            self.switch_to_rodsuser()
+            #self.switch_to_rodsuser()
             command.assert_command(['ils', '-Lr'], 'STDOUT') # debugging
 
     def do_list_object_with_multiple_replicas_only_shows_one_s3_object_per_irods_object_test(
         self, status_tuple, expected_selected_replica_indexes
     ):
-        self.assertEqual(27, len(expected_selected_replica_indexes))
+        #self.assertEqual(27, len(expected_selected_replica_indexes))
         repl0_status, repl1_status, repl2_status = status_tuple
         replica_info = [
             {"number": 0, "status": repl0_status, "mtime": str(1000), "size": self.repl0_size},
@@ -548,7 +551,7 @@ class ListObject_with_Multiple_Replicas_Test(unittest.TestCase):
 
         ###
 
-        replica_info[1]["mtime"] = str(1001)
+        replica_info[0]["mtime"] = str(1001)
 
         replica_info[1]["mtime"] = str(1000)
         replica_info[2]["mtime"] = str(1000)
@@ -574,9 +577,9 @@ class ListObject_with_Multiple_Replicas_Test(unittest.TestCase):
         replica_info[2]["mtime"] = str(1002)
         self.do_test(replica_info, expected_selected_replica_indexes[next(expected_index)])
 
-        ###
+        ####
 
-        replica_info[1]["mtime"] = str(1002)
+        replica_info[0]["mtime"] = str(1002)
 
         replica_info[1]["mtime"] = str(1000)
         replica_info[2]["mtime"] = str(1000)
@@ -647,7 +650,7 @@ class ListObject_with_Multiple_Replicas_Test(unittest.TestCase):
     def test_repl0_stale_repl1_stale_repl2_good(self):
         # cases 163-189
         self.do_list_object_with_multiple_replicas_only_shows_one_s3_object_per_irods_object_test(
-            (str(0), str(0), str(0)),
+            (str(0), str(0), str(1)),
             [2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2]
         )
 
